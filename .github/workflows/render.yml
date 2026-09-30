@@ -94,6 +94,7 @@ jobs:
       - name: Attach to the release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: gh release upload "job-${{ inputs.job_id }}" silent.mp4 --clobber
       - uses: actions/upload-artifact@v4
         with:
