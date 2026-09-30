@@ -1,0 +1,95 @@
+name: render
+
+# Renders one exported lesson as parallel frame ranges, then joins them into silent.mp4.
+# The job data is a release asset (job-<id>/dataset.tgz); cloud-render/run-github.mjs uploads it and deletes it afterwards.
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: Video job id
+        required: true
+      total_frames:
+        description: Frames in the lesson
+        required: true
+      shards:
+        description: Parallel jobs
+        required: true
+        default: '20'
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - id: m
+        env:
+          TOTAL: ${{ inputs.total_frames }}
+          SHARDS: ${{ inputs.shards }}
+        run: |
+          node -e '
+            const total = +process.env.TOTAL, n = +process.env.SHARDS, size = Math.ceil(total / n);
+            const include = [];
+            for (let i = 0; i < n; i++) {
+              const a = i * size, b = Math.min(total - 1, a + size - 1);
+              if (a <= b) include.push({ i, frames: `${a}-${b}` });
+            }
+            console.log("matrix=" + JSON.stringify({ include }));
+          ' >> "$GITHUB_OUTPUT"
+
+  render:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Chrome libraries
+        run: >
+          sudo apt-get update -qq && sudo apt-get install -y -qq libnss3 libdbus-1-3 libatk1.0-0 libgbm-dev
+          libasound2t64 libxrandr2 libxkbcommon-x11-0 libxfixes3 libxcomposite1 libxdamage1 libatk-bridge2.0-0
+          libcups2 libpango-1.0-0 libcairo2 libx11-xcb1 libxss1 libegl1 libgl1
+      - name: Job data
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "job-${{ inputs.job_id }}" -p dataset.tgz
+          mkdir job && tar -xzf dataset.tgz -C job
+      - name: Remotion
+        run: npm init -y >/dev/null && npm i --silent @remotion/renderer@4.0.529 remotion@4.0.529
+      - name: Render frames ${{ matrix.frames }}
+        run: node render-job.mjs --job job --out shard.mp4 --gl swangle --concurrency 2 --frames ${{ matrix.frames }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shard-${{ matrix.i }}
+          path: shard.mp4
+          retention-days: 1
+
+  merge:
+    needs: render
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: shard-*
+          path: shards
+      - name: Join
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+          for d in $(ls shards | sort -V); do echo "file 'shards/$d/shard.mp4'"; done > list.txt
+          ffmpeg -loglevel error -f concat -safe 0 -i list.txt -c copy silent.mp4
+          ffprobe -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 silent.mp4
+      - uses: actions/upload-artifact@v4
+        with:
+          name: silent
+          path: silent.mp4
+          retention-days: 1
