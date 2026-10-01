@@ -40,7 +40,9 @@ for (const member of input.script.cast) {
     n += 1;
   }
 }
-const imageNames = [...new Set(input.script.scenes.map((s) => s.props?.image).filter(Boolean))];
+// A scene names its figures as the older single `image` and/or the placed `images` list.
+const sceneImages = (s) => [s.props?.image, ...(s.props?.images ?? []).map((im) => im.name)];
+const imageNames = [...new Set(input.script.scenes.flatMap(sceneImages).filter(Boolean))];
 const presentImages = [];
 for (const name of imageNames) {
   const path = join(arg.job, 'images', name);
